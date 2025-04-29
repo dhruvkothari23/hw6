@@ -6,7 +6,6 @@
 
 typedef size_t HASH_INDEX_T;
 
-
 // Complete - Base Prober class
 template <typename KeyType>
 struct Prober {
@@ -59,7 +58,6 @@ struct DoubleHashProber : public Prober<KeyType>
     //==================================
     // Add data members, as desired
     //==================================
-    KeyType key_; // Store the key for h2 computation
 
 private:
     // Complete
@@ -98,7 +96,6 @@ public:
         HASH_INDEX_T modulus = findModulusToUseFromTableSize(m);
         // Compute probe stepsize given modulus and h2(k) 
         dhstep_ = modulus - h2_(key) % modulus;
-        key_ = key;
     }
 
     // To be completed
@@ -281,8 +278,7 @@ private:
     // ADD MORE DATA MEMBERS HERE, AS NECESSARY
     double resizeAlpha_; // Loading factor threshold for resizing
     size_t numItems_;    // Number of non-deleted items in the table
-    size_t totalItems_;  // Number of all items (including deleted ones)
-
+    size_t numDeleted_;  // Number of deleted items
 };
 
 // ----------------------------------------------------------------------------
@@ -308,7 +304,7 @@ HashTable<K,V,Prober,Hash,KEqual>::HashTable(
     resizeAlpha_ = resizeAlpha;
     mIndex_ = 0; // Start with the smallest capacity
     numItems_ = 0;
-    totalItems_ = 0;
+    numDeleted_ = 0;
     totalProbes_ = 0;
     
     // Initialize the table with the first capacity
@@ -321,10 +317,7 @@ HashTable<K,V,Prober,Hash,KEqual>::~HashTable()
 {
     // Delete all allocated HashItems
     for(size_t i = 0; i < table_.size(); i++) {
-        if(table_[i] != nullptr) {
-            delete table_[i];
-            table_[i] = nullptr;
-        }
+        delete table_[i];
     }
 }
 
@@ -347,8 +340,7 @@ template<typename K, typename V, typename Prober, typename Hash, typename KEqual
 void HashTable<K,V,Prober,Hash,KEqual>::insert(const ItemType& p)
 {
     // Check if we need to resize
-    double loadFactor = static_cast<double>(totalItems_) / CAPACITIES[mIndex_];
-    if(loadFactor >= resizeAlpha_) {
+    if((numItems_ + numDeleted_) >= static_cast<size_t>(CAPACITIES[mIndex_] * resizeAlpha_)) {
         resize();
     }
     
@@ -364,7 +356,6 @@ void HashTable<K,V,Prober,Hash,KEqual>::insert(const ItemType& p)
     if(table_[loc] == nullptr) {
         table_[loc] = new HashItem(p);
         numItems_++;
-        totalItems_++;
     } 
     // If the key already exists and it's not deleted, just update the value
     else if(!table_[loc]->deleted) {
@@ -375,6 +366,7 @@ void HashTable<K,V,Prober,Hash,KEqual>::insert(const ItemType& p)
         table_[loc]->deleted = false;
         table_[loc]->item = p;
         numItems_++;
+        numDeleted_--;
     }
 }
 
@@ -389,6 +381,7 @@ void HashTable<K,V,Prober,Hash,KEqual>::remove(const KeyType& key)
     if(item != nullptr && !item->deleted) {
         item->deleted = true;
         numItems_--;
+        numDeleted_++;
     }
 }
 
@@ -397,22 +390,22 @@ void HashTable<K,V,Prober,Hash,KEqual>::remove(const KeyType& key)
 template<typename K, typename V, typename Prober, typename Hash, typename KEqual>
 typename HashTable<K,V,Prober,Hash,KEqual>::ItemType const * HashTable<K,V,Prober,Hash,KEqual>::find(const KeyType& key) const
 {
-    HASH_INDEX_T h = this->probe(key);
-    if((npos == h) || nullptr == table_[h] || table_[h]->deleted){
+    HashItem const * item = this->internalFind(key);
+    if(item == nullptr || item->deleted) {
         return nullptr;
     }
-    return &table_[h]->item;
+    return &item->item;
 }
 
 // Complete
 template<typename K, typename V, typename Prober, typename Hash, typename KEqual>
 typename HashTable<K,V,Prober,Hash,KEqual>::ItemType * HashTable<K,V,Prober,Hash,KEqual>::find(const KeyType& key)
 {
-    HASH_INDEX_T h = this->probe(key);
-    if((npos == h) || nullptr == table_[h] || table_[h]->deleted){
+    HashItem * item = this->internalFind(key);
+    if(item == nullptr || item->deleted) {
         return nullptr;
     }
-    return &table_[h]->item;
+    return &item->item;
 }
 
 // Complete
@@ -420,7 +413,9 @@ template<typename K, typename V, typename Prober, typename Hash, typename KEqual
 const typename HashTable<K,V,Prober,Hash,KEqual>::ValueType& HashTable<K,V,Prober,Hash,KEqual>::at(const KeyType& key) const
 {
     HashItem const * item = this->internalFind(key);
-    if(item == nullptr || item->deleted) { throw std::out_of_range("Bad key"); }
+    if(item == nullptr || item->deleted) { 
+        throw std::out_of_range("Bad key"); 
+    }
     return item->item.second;
 }
 
@@ -429,7 +424,9 @@ template<typename K, typename V, typename Prober, typename Hash, typename KEqual
 typename HashTable<K,V,Prober,Hash,KEqual>::ValueType& HashTable<K,V,Prober,Hash,KEqual>::at(const KeyType& key)
 {
     HashItem * item = this->internalFind(key);
-    if(item == nullptr || item->deleted) { throw std::out_of_range("Bad key"); }
+    if(item == nullptr || item->deleted) { 
+        throw std::out_of_range("Bad key"); 
+    }
     return item->item.second;
 }
 
@@ -477,8 +474,9 @@ void HashTable<K,V,Prober,Hash,KEqual>::resize()
     table_.resize(CAPACITIES[mIndex_], nullptr);
     
     // Reset item counts
+    size_t oldNumItems = numItems_;
     numItems_ = 0;
-    totalItems_ = 0;
+    numDeleted_ = 0;
     
     // Rehash all non-deleted items from the old table
     for(size_t i = 0; i < oldTable.size(); i++) {
@@ -489,8 +487,12 @@ void HashTable<K,V,Prober,Hash,KEqual>::resize()
             }
             // Free the old HashItem
             delete oldTable[i];
-            oldTable[i] = nullptr;
         }
+    }
+    
+    // Verify we have the same number of items
+    if(numItems_ != oldNumItems) {
+        throw std::logic_error("Lost items during resize");
     }
 }
 
@@ -504,41 +506,36 @@ HASH_INDEX_T HashTable<K,V,Prober,Hash,KEqual>::probe(const KeyType& key) const
     HASH_INDEX_T loc = prober_.next(); 
     totalProbes_++;
     
-    // For keeping track of the first deleted location we encounter
-    HASH_INDEX_T firstDeleted = npos;
+    HASH_INDEX_T deletedLoc = npos;
     
     while(Prober::npos != loc)
     {
         if(nullptr == table_[loc]) {
-            // If we're searching for a key to find or remove, and it doesn't exist in the table
-            // but we did encounter a deleted location earlier, return npos
-            if(firstDeleted != npos && find(key) == nullptr) {
-                return firstDeleted;
+            if(deletedLoc != npos) {
+                return deletedLoc;
             }
             return loc;
         }
-        // If the key matches and item is not deleted, we found the key
-        else if(!table_[loc]->deleted && kequal_(table_[loc]->item.first, key)) {
-            return loc;
-        }
-        // If the location contains a deleted item
-        else if(table_[loc]->deleted) {
-            // Remember the first deleted location we find
-            if(firstDeleted == npos) {
-                firstDeleted = loc;
+        // If the key matches and it's not deleted, return this location
+        else if(kequal_(table_[loc]->item.first, key)) {
+            if(!table_[loc]->deleted) {
+                return loc;
             }
+            else if(deletedLoc == npos) {
+                // If this is the first deleted location for this key, store it
+                deletedLoc = loc;
+            }
+        }
+        // If we encounter a deleted location and haven't found one yet, store it
+        else if(table_[loc]->deleted && deletedLoc == npos) {
+            deletedLoc = loc;
         }
         
         loc = prober_.next();
         totalProbes_++;
     }
 
-    // If we've exhausted all probe locations and found a deleted spot, return it
-    if(firstDeleted != npos) {
-        return firstDeleted;
-    }
-    
-    return npos;
+    return deletedLoc;
 }
 
 // Complete
