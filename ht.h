@@ -489,6 +489,7 @@ void HashTable<K,V,Prober,Hash,KEqual>::resize()
             }
             // Free the old HashItem
             delete oldTable[i];
+            oldTable[i] = nullptr;
         }
     }
 }
@@ -503,34 +504,36 @@ HASH_INDEX_T HashTable<K,V,Prober,Hash,KEqual>::probe(const KeyType& key) const
     HASH_INDEX_T loc = prober_.next(); 
     totalProbes_++;
     
+    // For keeping track of the first deleted location we encounter
     HASH_INDEX_T firstDeleted = npos;
     
     while(Prober::npos != loc)
     {
         if(nullptr == table_[loc]) {
-            // If we've found a deleted location earlier, return that instead
-            if(firstDeleted != npos) {
+            // If we're searching for a key to find or remove, and it doesn't exist in the table
+            // but we did encounter a deleted location earlier, return npos
+            if(firstDeleted != npos && find(key) == nullptr) {
                 return firstDeleted;
             }
             return loc;
         }
-        // Check if this is a deleted location
+        // If the key matches and item is not deleted, we found the key
+        else if(!table_[loc]->deleted && kequal_(table_[loc]->item.first, key)) {
+            return loc;
+        }
+        // If the location contains a deleted item
         else if(table_[loc]->deleted) {
             // Remember the first deleted location we find
             if(firstDeleted == npos) {
                 firstDeleted = loc;
             }
         }
-        // If the key matches and it's not deleted, return this location
-        else if(kequal_(table_[loc]->item.first, key)) {
-            return loc;
-        }
         
         loc = prober_.next();
         totalProbes_++;
     }
 
-    // If we found a deleted location, return that
+    // If we've exhausted all probe locations and found a deleted spot, return it
     if(firstDeleted != npos) {
         return firstDeleted;
     }
