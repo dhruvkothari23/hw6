@@ -279,6 +279,7 @@ private:
     double resizeAlpha_; // Loading factor threshold
     size_t numItems_; // Number of non-deleted items in the table
 
+    friend struct HashTableTest; // For testing - do not remove
 };
 
 // ----------------------------------------------------------------------------
@@ -298,14 +299,9 @@ const HASH_INDEX_T HashTable<K,V,Prober,Hash,KEqual>::CAPACITIES[] =
 template<typename K, typename V, typename Prober, typename Hash, typename KEqual>
 HashTable<K,V,Prober,Hash,KEqual>::HashTable(
     double resizeAlpha, const Prober& prober, const Hasher& hash, const KEqual& kequal)
-       :  hash_(hash), kequal_(kequal), prober_(prober)
+       :  hash_(hash), kequal_(kequal), prober_(prober), totalProbes_(0),
+          mIndex_(0), resizeAlpha_(resizeAlpha), numItems_(0)
 {
-    // Initialize any other data members as necessary
-    resizeAlpha_ = resizeAlpha;
-    mIndex_ = 0; // Start with the first capacity
-    numItems_ = 0;
-    totalProbes_ = 0;
-    
     // Initialize the table with the first capacity (11)
     table_.resize(CAPACITIES[mIndex_], nullptr);
 }
@@ -316,9 +312,7 @@ HashTable<K,V,Prober,Hash,KEqual>::~HashTable()
 {
     // Delete all allocated HashItems
     for(size_t i = 0; i < table_.size(); i++) {
-        if(table_[i] != nullptr) {
-            delete table_[i];
-        }
+        delete table_[i];
     }
     // Clear the table
     table_.clear();
@@ -343,8 +337,7 @@ template<typename K, typename V, typename Prober, typename Hash, typename KEqual
 void HashTable<K,V,Prober,Hash,KEqual>::insert(const ItemType& p)
 {
     // Check if we need to resize before inserting
-    double loadFactor = static_cast<double>(numItems_ + 1) / table_.size();
-    if(loadFactor >= resizeAlpha_) {
+    if(numItems_ >= resizeAlpha_ * CAPACITIES[mIndex_]) {
         resize();
     }
     
@@ -356,23 +349,20 @@ void HashTable<K,V,Prober,Hash,KEqual>::insert(const ItemType& p)
         throw std::logic_error("No free location can be found");
     }
     
-    // If the location is empty or has a deleted item, create a new HashItem
+    // If the location is empty, create a new HashItem
     if(table_[loc] == nullptr) {
         table_[loc] = new HashItem(p);
         numItems_++;
     }
     // If the location has the same key, update the value
-    else if(kequal_(table_[loc]->item.first, p.first)) {
+    else if(!table_[loc]->deleted && kequal_(table_[loc]->item.first, p.first)) {
         table_[loc]->item.second = p.second;
-        // If it was marked as deleted, unmark it and increment numItems
-        if(table_[loc]->deleted) {
-            table_[loc]->deleted = false;
-            numItems_++;
-        }
     }
-    // This shouldn't happen with our probe function, but just in case
-    else {
-        throw std::logic_error("Inconsistent state in insert");
+    // If the location was marked as deleted, replace it
+    else if(table_[loc]->deleted) {
+        delete table_[loc];
+        table_[loc] = new HashItem(p);
+        numItems_++;
     }
 }
 
@@ -380,12 +370,12 @@ void HashTable<K,V,Prober,Hash,KEqual>::insert(const ItemType& p)
 template<typename K, typename V, typename Prober, typename Hash, typename KEqual>
 void HashTable<K,V,Prober,Hash,KEqual>::remove(const KeyType& key)
 {
-    // Find the item to remove
+    // Find the item using probe()
     HASH_INDEX_T loc = probe(key);
     
-    // If the item exists and is not already deleted
+    // If the item exists and is not already marked as deleted
     if(loc != npos && table_[loc] != nullptr && !table_[loc]->deleted) {
-        // Mark it as deleted, but don't delete the HashItem yet
+        // Mark it as deleted
         table_[loc]->deleted = true;
         numItems_--;
     }
@@ -467,31 +457,50 @@ void HashTable<K,V,Prober,Hash,KEqual>::resize()
         throw std::logic_error("Cannot resize further, reached maximum capacity");
     }
     
+    // Save the old table and its size
+    std::vector<HashItem*> oldTable = table_;
+    
     // Move to the next capacity
     mIndex_++;
-    
-    // Save the old table
-    std::vector<HashItem*> oldTable = table_;
     
     // Create a new table with the new capacity
     table_.clear();
     table_.resize(CAPACITIES[mIndex_], nullptr);
     
-    // Reset the number of items since we'll recount during rehashing
+    // Save the number of items
+    size_t oldNumItems = numItems_;
     numItems_ = 0;
     
     // Rehash all non-deleted items from the old table to the new table
     for(size_t i = 0; i < oldTable.size(); i++) {
-        if(oldTable[i] != nullptr && !oldTable[i]->deleted) {
-            // Reinsert the item into the new table
-            insert(oldTable[i]->item);
-        }
-        
-        // Delete the old HashItem (whether deleted or not)
         if(oldTable[i] != nullptr) {
+            if(!oldTable[i]->deleted) {
+                // Find the new position for this item
+                HASH_INDEX_T loc = hash_(oldTable[i]->item.first) % CAPACITIES[mIndex_];
+                prober_.init(loc, CAPACITIES[mIndex_], oldTable[i]->item.first);
+                
+                loc = prober_.next();
+                while(loc != Prober::npos && table_[loc] != nullptr) {
+                    loc = prober_.next();
+                }
+                
+                if(loc == Prober::npos) {
+                    throw std::logic_error("No location available during resize");
+                }
+                
+                // Insert the item directly
+                table_[loc] = new HashItem(oldTable[i]->item);
+                numItems_++;
+            }
+            
+            // Delete the old HashItem
             delete oldTable[i];
-            oldTable[i] = nullptr;
         }
+    }
+    
+    // Sanity check to make sure we have the right number of items
+    if(numItems_ != oldNumItems) {
+        throw std::logic_error("Item count mismatch after resize");
     }
 }
 
@@ -506,7 +515,7 @@ HASH_INDEX_T HashTable<K,V,Prober,Hash,KEqual>::probe(const KeyType& key) const
     totalProbes_++;
     while(Prober::npos != loc)
     {
-        if(nullptr == table_[loc] ) {
+        if(nullptr == table_[loc]) {
             return loc;
         }
         // fill in the condition for this else if statement which should 
