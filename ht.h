@@ -492,7 +492,7 @@ void HashTable<K,V,Prober,Hash,KEqual>::resize()
     }
 }
 
-// Almost complete
+// The key function that needs to be fixed for StressInsertRemoveResizeLinear test
 template<typename K, typename V, typename Prober, typename Hash, typename KEqual>
 HASH_INDEX_T HashTable<K,V,Prober,Hash,KEqual>::probe(const KeyType& key) const
 {
@@ -503,37 +503,42 @@ HASH_INDEX_T HashTable<K,V,Prober,Hash,KEqual>::probe(const KeyType& key) const
     totalProbes_++;
     
     HASH_INDEX_T firstDeleted = npos;
+    bool keyMatch = false;
     
     while(Prober::npos != loc)
     {
-        // If the slot is empty, we can insert here
+        // Empty slot found
         if(nullptr == table_[loc]) {
-            // If we're doing a lookup and no matching key was found but we saw a deleted location,
-            // return the first deleted location for possible insertion
+            // If we've seen a deleted slot, return that for insertion
             if(firstDeleted != npos) {
                 return firstDeleted;
             }
             return loc;
         }
         
-        // If this slot has the key we're looking for, return it
+        // Check if this is the key we're looking for
         if(kequal_(table_[loc]->item.first, key)) {
-            // Always return an exact match immediately, even if deleted
-            return loc;
+            keyMatch = true;
+            // If it's not deleted, return it
+            if(!table_[loc]->deleted) {
+                return loc;
+            }
+            // If it is deleted and we haven't seen a deleted slot yet, 
+            // remember this one but continue probing
+            else if(firstDeleted == npos) {
+                firstDeleted = loc;
+            }
         }
-        
         // If this is a deleted slot and we haven't seen one yet, remember it
-        // We might need to return this location if we're looking for a place to insert
-        // and we don't find the key in the table
-        if(table_[loc]->deleted && firstDeleted == npos) {
+        else if(table_[loc]->deleted && firstDeleted == npos) {
             firstDeleted = loc;
         }
         
-        // Continue probing
+        // Continue to the next probe location
         loc = prober_.next();
         totalProbes_++;
     }
-
+    
     // If we've exhausted all probe locations but found a deleted spot, return it
     return firstDeleted;
 }
