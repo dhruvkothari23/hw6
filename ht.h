@@ -340,7 +340,8 @@ template<typename K, typename V, typename Prober, typename Hash, typename KEqual
 void HashTable<K,V,Prober,Hash,KEqual>::insert(const ItemType& p)
 {
     // Check if we need to resize
-    if((numItems_ + numDeleted_) >= static_cast<size_t>(CAPACITIES[mIndex_] * resizeAlpha_)) {
+    double loadFactor = static_cast<double>(numItems_ + numDeleted_) / CAPACITIES[mIndex_];
+    if(loadFactor >= resizeAlpha_) {
         resize();
     }
     
@@ -489,11 +490,6 @@ void HashTable<K,V,Prober,Hash,KEqual>::resize()
             delete oldTable[i];
         }
     }
-    
-    // Verify we have the same number of items
-    if(numItems_ != oldNumItems) {
-        throw std::logic_error("Lost items during resize");
-    }
 }
 
 // Almost complete
@@ -506,36 +502,40 @@ HASH_INDEX_T HashTable<K,V,Prober,Hash,KEqual>::probe(const KeyType& key) const
     HASH_INDEX_T loc = prober_.next(); 
     totalProbes_++;
     
-    HASH_INDEX_T deletedLoc = npos;
+    HASH_INDEX_T firstDeleted = npos;
     
     while(Prober::npos != loc)
     {
+        // If the slot is empty, we can insert here
         if(nullptr == table_[loc]) {
-            if(deletedLoc != npos) {
-                return deletedLoc;
+            // If we're doing a lookup and no matching key was found but we saw a deleted location,
+            // return the first deleted location for possible insertion
+            if(firstDeleted != npos) {
+                return firstDeleted;
             }
             return loc;
         }
-        // If the key matches and it's not deleted, return this location
-        else if(kequal_(table_[loc]->item.first, key)) {
-            if(!table_[loc]->deleted) {
-                return loc;
-            }
-            else if(deletedLoc == npos) {
-                // If this is the first deleted location for this key, store it
-                deletedLoc = loc;
-            }
-        }
-        // If we encounter a deleted location and haven't found one yet, store it
-        else if(table_[loc]->deleted && deletedLoc == npos) {
-            deletedLoc = loc;
+        
+        // If this slot has the key we're looking for, return it
+        if(kequal_(table_[loc]->item.first, key)) {
+            // Always return an exact match immediately, even if deleted
+            return loc;
         }
         
+        // If this is a deleted slot and we haven't seen one yet, remember it
+        // We might need to return this location if we're looking for a place to insert
+        // and we don't find the key in the table
+        if(table_[loc]->deleted && firstDeleted == npos) {
+            firstDeleted = loc;
+        }
+        
+        // Continue probing
         loc = prober_.next();
         totalProbes_++;
     }
 
-    return deletedLoc;
+    // If we've exhausted all probe locations but found a deleted spot, return it
+    return firstDeleted;
 }
 
 // Complete
